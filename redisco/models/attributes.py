@@ -4,15 +4,16 @@ Defines the fields that can be added to redisco models.
 """
 import time
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dateutil.tz import tzutc, tzlocal
 from calendar import timegm
 from redisco.containers import List
-from exceptions import FieldValidationError, MissingID
+from .exceptions import FieldValidationError, MissingID
 
 __all__ = ['Attribute', 'CharField', 'ListField', 'DateTimeField',
-        'DateField', 'ReferenceField', 'Collection', 'IntegerField',
-        'FloatField', 'BooleanField', 'Counter', 'ZINDEXABLE']
+        'DateField', 'TimeDeltaField', 'ReferenceField', 'Collection',
+        'IntegerField', 'FloatField', 'BooleanField', 'Counter',
+        'ZINDEXABLE']
 
 
 class Attribute(object):
@@ -51,8 +52,12 @@ class Attribute(object):
         try:
             return getattr(instance, '_' + self.name)
         except AttributeError:
-            self.__set__(instance, self.default)
-            return self.default
+            if callable(self.default):
+                default = self.default()
+            else:
+                default = self.default
+            self.__set__(instance, default)
+            return default
 
     def __set__(self, instance, value):
         setattr(instance, '_' + self.name, value)
@@ -194,7 +199,9 @@ class DateTimeField(Attribute):
             dt = datetime.fromtimestamp(float(value), tzutc())
             # And gently override (ie: not convert) to the TZ to UTC
             return dt
-        except TypeError, ValueError:
+        except TypeError:
+            return None
+        except ValueError:
             return None
 
     def typecast_for_storage(self, value):
@@ -228,7 +235,9 @@ class DateField(Attribute):
             dt = date.fromtimestamp(float(value))
             # And assign (ie: not convert) the UTC TimeZone
             return dt
-        except TypeError, ValueError:
+        except TypeError:
+            return None
+        except ValueError:
             return None
 
     def typecast_for_storage(self, value):
@@ -244,6 +253,48 @@ class DateField(Attribute):
 
     def acceptable_types(self):
         return self.value_type()
+
+class TimeDeltaField(Attribute):
+
+    def __init__(self, **kwargs):
+        super(TimeDeltaField, self).__init__(**kwargs)
+
+    if hasattr(timedelta, "totals_seconds"):
+        def _total_seconds(self, td):
+            return td.total_seconds
+    else:
+        def _total_seconds(self, td):
+            return (td.microseconds + 0.0 + \
+                (td.seconds + td.days * 24 * 3600) * 10 ** 6) / 10 ** 6
+
+
+    def typecast_for_read(self, value):
+        try:
+            # We load as if it is UTC time
+            if value is None:
+                value = 0.
+            td = timedelta(seconds=float(value))
+            return td
+        except TypeError:
+            return None
+        except ValueError:
+            return None
+
+    def typecast_for_storage(self, value):
+        if not isinstance(value, timedelta):
+            raise TypeError("%s should be timedelta object, and not a %s" %
+                    (self.name, type(value)))
+        if value is None:
+            return None
+
+        return "%d" % self._total_seconds(value)
+
+    def value_type(self):
+        return timedelta
+
+    def acceptable_types(self):
+        return self.value_type()
+
 
 class ListField(object):
     """Stores a list of objects.

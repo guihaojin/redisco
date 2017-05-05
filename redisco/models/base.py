@@ -3,11 +3,11 @@ from datetime import datetime, date
 from dateutil.tz import tzutc
 import redisco
 from redisco.containers import Set, List, SortedSet, NonPersistentList
-from attributes import *
-from key import Key
-from managers import ManagerDescriptor, Manager
-from exceptions import FieldValidationError, MissingID, BadKeyError, WatchError
-from attributes import Counter
+from .attributes import *
+from .key import Key
+from .managers import ManagerDescriptor, Manager
+from .exceptions import FieldValidationError, MissingID, BadKeyError, WatchError
+from .attributes import Counter
 
 __all__ = ['Model', 'from_key']
 
@@ -157,11 +157,21 @@ def _initialize_key(model_class, name):
     model_class._key = Key(model_class._meta['key'] or name)
 
 
-def _initialize_manager(model_class):
+def _initialize_manager(model_class, name, bases, attrs):
     """
-    Initializes the objects manager attribute of the model.
+    Initializes the manager attributes of the model.
+    Defaults to an instance of `Manager' attached to `objects'.
+
+    A manager name is created using the `__attr_name__' class
+    attribute, or the class name in case the attribute is missing.
     """
+
     model_class.objects = ManagerDescriptor(Manager(model_class))
+    for key, val in attrs.iteritems():
+        if isinstance(val, type) and issubclass(val, Manager):
+            attr_name = getattr(val, "__attr_name__", key.lower())
+            descriptor = ManagerDescriptor(val(model_class))
+            setattr(model_class, attr_name, descriptor)
 
 
 class ModelOptions(object):
@@ -209,7 +219,7 @@ class ModelBase(type):
         _initialize_lists(cls, name, bases, attrs)
         _initialize_indices(cls, name, bases, attrs)
         _initialize_key(cls, name)
-        _initialize_manager(cls)
+        _initialize_manager(cls, name, bases, attrs)
         # if targeted by a reference field using a string,
         # override for next try
         for target, model_class, att in _deferred_refs:
@@ -217,6 +227,8 @@ class ModelBase(type):
                 att._target_type = cls
                 _initialize_referenced(model_class, att)
 
+    def __getitem__(self, id):
+        return self.objects.get_by_id(id)
 
 class Model(object):
     __metaclass__ = ModelBase
@@ -226,7 +238,8 @@ class Model(object):
 
     def is_valid(self):
         """
-        Returns True if all the fields are valid.
+        Returns True if all the fields are valid, otherwise
+        errors are in the 'errors' attribute
 
         It first validates the fields (required, unique, etc.)
         and then calls the validate method.
@@ -242,6 +255,8 @@ class Model(object):
         >>> f = Foo()
         >>> f.bar = "Invalid"
         >>> f.save()
+        False
+        >>> f.errors
         ['bar', 'Invalid value']
 
         .. WARNING::
@@ -252,7 +267,7 @@ class Model(object):
         for field in self.fields:
             try:
                 field.validate(self)
-            except FieldValidationError, e:
+            except FieldValidationError as e:
                 self._errors.extend(e.errors)
         self.validate()
         return not bool(self._errors)
@@ -273,6 +288,8 @@ class Model(object):
         ...
         >>> f = Foo(name="Invalid")
         >>> f.save()
+        False
+        >>> f.errors
         [('name', 'cannot be Invalid')]
 
         """
@@ -733,7 +750,9 @@ def from_key(key):
     try:
         _, id = key.split(':', 2)
         id = int(id)
-    except ValueError, TypeError:
+    except ValueError:
+        raise BadKeyError
+    except TypeError:
         raise BadKeyError
     return model.objects.get_by_id(id)
 
@@ -768,6 +787,8 @@ class Mutex(object):
                     continue
 
     def lock_has_expired(self, lock):
+        if lock is None:
+            lock = 0.
         return float(lock) < time.time()
 
     def unlock(self):

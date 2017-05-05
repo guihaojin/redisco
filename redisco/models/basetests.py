@@ -6,18 +6,27 @@ import redisco
 import unittest
 from datetime import date
 from redisco import models
+from redisco.models import managers
 from redisco.models.base import Mutex
 from dateutil.tz import tzlocal
+
 
 class Person(models.Model):
     first_name = models.CharField(required=True)
     last_name = models.CharField()
+    active = models.BooleanField(default=False)        
 
     def full_name(self):
         return "%s %s" % (self.first_name, self.last_name,)
 
     class Meta:
         indices = ['full_name']
+
+    class HistoryManager(managers.Manager):
+        __attr_name__ = "all_objects"
+        def get_model_set(self):
+            return super(Person.HistoryManager, self).\
+                get_model_set().filter(active=True)
 
 
 class RediscoTestCase(unittest.TestCase):
@@ -77,11 +86,11 @@ class ModelTestCase(RediscoTestCase):
 
     def test_repr(self):
         person1 = Person(first_name="Granny", last_name="Goose")
-        self.assertEqual("<Person {'first_name': 'Granny', 'last_name': 'Goose'}>",
+        self.assertEqual("<Person {'active': False, 'first_name': 'Granny', 'last_name': 'Goose'}>",
                 repr(person1))
 
         self.assert_(person1.save())
-        self.assertEqual("<Person:1 {'first_name': 'Granny', 'last_name': 'Goose', 'id': '1'}>",
+        self.assertEqual("<Person:1 {'active': False, 'first_name': 'Granny', 'last_name': 'Goose', 'id': '1'}>",
                 repr(person1))
 
     def test_update(self):
@@ -114,6 +123,23 @@ class ModelTestCase(RediscoTestCase):
         self.assertEqual(False, u.disliked)
         self.assertEqual(199, u.views)
 
+    def test_callable_default_CharField_val(self):
+        class User(models.Model):
+            views = models.IntegerField(default=lambda: 199)
+            liked = models.BooleanField(default=lambda: True)
+            disliked = models.BooleanField(default=lambda: False)
+
+        u = User()
+        self.assertEqual(True, u.liked)
+        self.assertEqual(False, u.disliked)
+        self.assertEqual(199, u.views)
+        assert u.save()
+
+        u = User.objects.all()[0]
+        self.assertEqual(True, u.liked)
+        self.assertEqual(False, u.disliked)
+        self.assertEqual(199, u.views)
+
     def test_getitem(self):
         person1 = Person(first_name="Granny", last_name="Goose")
         person1.save()
@@ -128,6 +154,13 @@ class ModelTestCase(RediscoTestCase):
 
         self.assertEqual('Granny', p1.first_name)
         self.assertEqual('Goose', p1.last_name)
+
+    def test_multiple_managers_exist(self):
+        self.assertTrue(isinstance(Person.objects, managers.Manager))
+        self.assertTrue(isinstance(Person.all_objects, managers.Manager))
+
+    def test_history_manager(self):
+        self.assertEqual(Person.all_objects.get_by_id(1), None)
 
     def test_manager_create(self):
         person = Person.objects.create(first_name="Granny", last_name="Goose")
@@ -610,11 +643,11 @@ class Student(models.Model):
     average = models.FloatField(required=True)
 
 class FloatFieldTestCase(RediscoTestCase):
-    def test_CharField(self):
+    def test_FloatField(self):
         s = Student(name="Richard Cypher", average=86.4)
         self.assertEqual(86.4, s.average)
 
-    def test_saved_CharField(self):
+    def test_saved_FloatField(self):
         s = Student.objects.create(name="Richard Cypher",
                       average=3.14159)
         assert s
@@ -635,7 +668,7 @@ class FloatFieldTestCase(RediscoTestCase):
 
 
 class Task(models.Model):
-    name = models.CharField()
+    name = models.CharField(default="Unknown")
     done = models.BooleanField()
 
 class BooleanFieldTestCase(RediscoTestCase):
@@ -650,11 +683,19 @@ class BooleanFieldTestCase(RediscoTestCase):
 
         t = Task.objects.all()[0]
         self.assertFalse(t.done)
+        self.assertEqual(t.name, "Cook dinner")
         t.done = True
         assert t.save()
 
         t = Task.objects.all()[0]
         self.assertTrue(t.done)
+
+        t_default = Task(done=False)
+        assert t_default.save()
+
+        t_default = Task.objects.get_by_id(t_default.id)
+        self.assertTrue(t_default.name == "Unknown")
+
 
     def test_indexing(self):
         assert Task.objects.create(name="Study Lua", done=False)
@@ -861,6 +902,33 @@ class DateTimeFieldTestCase(RediscoTestCase):
         post = Post.objects.get_by_id(post.id)
         self.assertEqual(n, post.date_posted)
         assert post.created_at
+
+
+class TimeDeltaFieldTestCase(RediscoTestCase):
+
+    def test_basic(self):
+        from datetime import timedelta
+
+        duration = timedelta(seconds=10)
+        default_duration = timedelta(seconds=20)
+        class DurationEvent(models.Model):
+            name = models.CharField()
+            started = models.DateTimeField()
+            duration = models.TimeDeltaField(default=timedelta(seconds=20))
+
+
+        event_ten_sec = DurationEvent(name="Event 10 seconds", duration=timedelta(seconds=10))
+        assert event_ten_sec.is_valid(), [event_ten_sec.errors ]
+        assert event_ten_sec.save()
+        event_ten_sec = DurationEvent.objects.get_by_id(event_ten_sec.id)
+        self.assertEqual(duration, event_ten_sec.duration)
+        assert event_ten_sec.duration
+
+        event_default_duration = DurationEvent(name="Event default duration")
+        assert event_default_duration.save()
+        event_default_duration = DurationEvent.objects.get_by_id(event_default_duration.id)
+        self.assertEqual(default_duration, event_default_duration.duration)
+        assert event_default_duration.duration
 
 
 class CounterFieldTestCase(RediscoTestCase):

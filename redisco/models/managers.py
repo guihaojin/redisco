@@ -1,4 +1,4 @@
-from modelset import ModelSet
+from .modelset import ModelSet
 
 ############
 # Managers #
@@ -15,6 +15,7 @@ class ManagerDescriptor(object):
 
 
 class Manager(object):
+
     def __init__(self, model_class):
         self.model_class = model_class
 
